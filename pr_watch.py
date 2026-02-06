@@ -534,8 +534,10 @@ class PRWatchApp(rumps.App):
         self.menu.add(rumps.MenuItem(main_label, callback=self._make_pr_cb(pr["url"], pr.get("source", "authored"))))
 
         if not is_done:
-            # Detail line: CI + review status + time
+            # Detail line: CI + review status + author + time
             parts = [pr["ci_label"], pr["review_label"]]
+            if pr.get("source") == "watched" and pr.get("author"):
+                parts.append(f"by {pr['author']}")
             if updated:
                 parts.append(updated)
             detail_label = f"     {' · '.join(parts)}"
