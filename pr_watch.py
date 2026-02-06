@@ -70,6 +70,8 @@ GRAPHQL_QUERY = """
             }
           }
         }
+        mergeQueueEntry { state position }
+        autoMergeRequest { enabledAt }
         reviews(last: 10) {
           nodes {
             state
@@ -124,6 +126,8 @@ query($owner: String!, $repo: String!, $number: Int!) {
           }
         }
       }
+      mergeQueueEntry { state position }
+      autoMergeRequest { enabledAt }
       reviews(last: 10) {
         nodes {
           state
@@ -140,13 +144,16 @@ query($owner: String!, $repo: String!, $number: Int!) {
 
 
 # ── Status helpers ─────────────────────────────────────────────────────
-def combined_icon(ci_state: str | None, review_decision: str | None, pr_state: str = "OPEN") -> str:
+def combined_icon(ci_state: str | None, review_decision: str | None, pr_state: str = "OPEN", in_merge_queue: bool = False) -> str:
     """Single icon reflecting the overall PR status (CI + review combined)."""
     # Merged or closed
     if pr_state == "MERGED":
         return "✅"
     if pr_state == "CLOSED":
         return "⚫"
+    # In merge queue
+    if in_merge_queue:
+        return "🚀"
     # CI failing/erroring always takes priority
     if ci_state in ("FAILURE", "ERROR"):
         return "❌"
@@ -350,6 +357,11 @@ def normalize_pr(node: dict, source: str = "authored") -> dict:
     # Labels
     labels = [l["name"] for l in node.get("labels", {}).get("nodes", [])]
 
+    # Merge queue
+    mq = node.get("mergeQueueEntry")
+    in_merge_queue = mq is not None
+    merge_queue_position = mq.get("position") if mq else None
+
     repo = node.get("repository", {}).get("nameWithOwner", "")
 
     return {
@@ -363,13 +375,15 @@ def normalize_pr(node: dict, source: str = "authored") -> dict:
         "createdAt": node.get("createdAt"),
         "updatedAt": node.get("updatedAt"),
         "mergeable": node.get("mergeable"),
+        "in_merge_queue": in_merge_queue,
+        "merge_queue_position": merge_queue_position,
         "ci_state": ci_state,
         "ci_icon": ci_icon(ci_state),
         "ci_label": ci_label(ci_state),
         "review_decision": review_decision,
         "review_icon": review_icon(review_decision),
         "review_label": review_label(review_decision),
-        "status_icon": combined_icon(ci_state, review_decision, node.get("state", "OPEN")),
+        "status_icon": combined_icon(ci_state, review_decision, node.get("state", "OPEN"), in_merge_queue),
         "checks": checks,
         "reviews": reviews,
         "labels": labels,
@@ -531,11 +545,25 @@ class PRWatchApp(rumps.App):
         elif pr.get("state") == "CLOSED":
             state_suffix = " — closed"
         main_label = f"{icon}  {pr['repo_short']}#{pr['number']}: {title_text}{draft}{state_suffix}"
-        self.menu.add(rumps.MenuItem(main_label, callback=self._make_pr_cb(pr["url"], pr.get("source", "authored"))))
+        open_item = rumps.MenuItem(main_label, callback=self._make_open_cb(pr["url"]))
+        self.menu.add(open_item)
+
+        # Alternate item: shown when Option is held — dismisses the PR
+        from AppKit import NSAlternateKeyMask
+        dismiss_label = f"     ✕  Dismiss #{pr['number']}"
+        dismiss_item = rumps.MenuItem(dismiss_label, callback=self._make_dismiss_cb(pr["url"], pr.get("source", "authored")))
+        dismiss_item._menuitem.setAlternate_(True)
+        dismiss_item._menuitem.setKeyEquivalentModifierMask_(NSAlternateKeyMask)
+        self.menu.add(dismiss_item)
 
         if not is_done:
             # Detail line: CI + review status + author + time + failing checks
-            parts = [pr["ci_label"], pr["review_label"]]
+            parts = []
+            if pr.get("in_merge_queue"):
+                pos = pr.get("merge_queue_position")
+                parts.append(f"Merge queue #{pos}" if pos is not None else "Merge queue")
+            else:
+                parts.extend([pr["ci_label"], pr["review_label"]])
             if pr.get("source") == "watched" and pr.get("author"):
                 parts.append(f"by {pr['author']}")
             if updated:
@@ -553,36 +581,22 @@ class PRWatchApp(rumps.App):
             self.menu.add(detail)
 
 
-    def _make_pr_cb(self, url: str, source: str):
-        """Click opens in browser. Option+click dismisses."""
+    def _make_open_cb(self, url: str):
         def cb(_):
-            from AppKit import NSEvent, NSAlternateKeyMask
-            flags = NSEvent.modifierFlags()
-            if flags & NSAlternateKeyMask:
-                # Option+click = dismiss
-                if source == "watched":
-                    self.config_data["watched_prs"] = [
-                        u for u in self.config_data.get("watched_prs", []) if u != url
-                    ]
-                self.config_data.setdefault("dismissed_prs", []).append(url)
-                save_config(self.config_data)
-                self._fetch_pending = True
-            else:
-                webbrowser.open(url)
+            webbrowser.open(url)
         return cb
 
     def _make_dismiss_cb(self, url: str, source: str):
         def cb(_):
-            # For watched PRs, remove from watched list
             if source == "watched":
                 self.config_data["watched_prs"] = [
                     u for u in self.config_data.get("watched_prs", []) if u != url
                 ]
-            # For all PRs, add to dismissed list
             self.config_data.setdefault("dismissed_prs", []).append(url)
             save_config(self.config_data)
             self._fetch_pending = True
         return cb
+
 
     def _on_add_pr(self, _):
         # Use osascript for the dialog — it reliably appears in front
