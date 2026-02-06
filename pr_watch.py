@@ -572,13 +572,14 @@ class PRWatchApp(rumps.App):
         open_item = rumps.MenuItem(main_label, callback=self._make_open_cb(pr["url"]))
         self.menu.add(open_item)
 
-        # Alternate item: shown when Option is held — dismisses the PR
-        from AppKit import NSAlternateKeyMask
-        dismiss_label = f"     ✕  Dismiss #{pr['number']}"
-        dismiss_item = rumps.MenuItem(dismiss_label, callback=self._make_dismiss_cb(pr["url"], pr.get("source", "authored")))
-        dismiss_item._menuitem.setAlternate_(True)
-        dismiss_item._menuitem.setKeyEquivalentModifierMask_(NSAlternateKeyMask)
-        self.menu.add(dismiss_item)
+        # Alternate item: shown when Option is held — only for watched PRs
+        if pr.get("source") == "watched":
+            from AppKit import NSAlternateKeyMask
+            dismiss_label = f"     ✕  Dismiss #{pr['number']}"
+            dismiss_item = rumps.MenuItem(dismiss_label, callback=self._make_dismiss_cb(pr["url"], "watched"))
+            dismiss_item._menuitem.setAlternate_(True)
+            dismiss_item._menuitem.setKeyEquivalentModifierMask_(NSAlternateKeyMask)
+            self.menu.add(dismiss_item)
 
         if not is_done:
             # Detail line: CI + review status + author + time + failing checks
