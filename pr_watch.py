@@ -216,10 +216,15 @@ def review_label(decision: str | None) -> str:
 
 def parse_pr_url(url: str) -> tuple[str, str, int] | None:
     """Extract (owner, repo, number) from a GitHub PR URL."""
-    m = re.match(r"https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)", url.strip())
+    m = re.match(r"https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)", url.strip().rstrip("/"))
     if m:
         return m.group(1), m.group(2), int(m.group(3))
     return None
+
+
+def normalize_url(url: str) -> str:
+    """Normalize a PR URL by stripping trailing slashes."""
+    return url.strip().rstrip("/")
 
 
 def time_ago(iso_str: str) -> str:
@@ -484,11 +489,11 @@ class PRWatchApp(rumps.App):
 
             query = self.config_data.get("my_prs_query", DEFAULT_CONFIG["my_prs_query"])
             self.my_prs = fetch_my_prs(query)
-            dismissed = set(self.config_data.get("dismissed_prs", []))
+            dismissed = {normalize_url(u) for u in self.config_data.get("dismissed_prs", [])}
 
             self.watched_prs = []
             for url in self.config_data.get("watched_prs", []):
-                if url in dismissed:
+                if normalize_url(url) in dismissed:
                     continue
                 parsed = parse_pr_url(url)
                 if parsed:
@@ -615,11 +620,12 @@ class PRWatchApp(rumps.App):
 
     def _make_dismiss_cb(self, url: str, source: str):
         def cb(_):
+            norm = normalize_url(url)
             if source == "watched":
                 self.config_data["watched_prs"] = [
-                    u for u in self.config_data.get("watched_prs", []) if u != url
+                    u for u in self.config_data.get("watched_prs", []) if normalize_url(u) != norm
                 ]
-            self.config_data.setdefault("dismissed_prs", []).append(url)
+            self.config_data.setdefault("dismissed_prs", []).append(norm)
             save_config(self.config_data)
             self._fetch_pending = True
         return cb
