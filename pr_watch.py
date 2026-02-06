@@ -319,6 +319,22 @@ def fetch_single_pr(owner: str, repo: str, number: int) -> dict | None:
         return None
 
 
+def _fetch_mergeable_rest(pr_url: str) -> str | None:
+    """Fetch mergeable status via REST API (more reliable than GraphQL)."""
+    # Extract owner/repo/number from URL
+    parsed = parse_pr_url(pr_url)
+    if not parsed:
+        return None
+    owner, repo, number = parsed
+    raw = run_gh("pr", "view", str(number), "--repo", f"{owner}/{repo}", "--json", "mergeable")
+    if raw:
+        try:
+            return json.loads(raw).get("mergeable")
+        except (json.JSONDecodeError, KeyError):
+            pass
+    return None
+
+
 def normalize_pr(node: dict, source: str = "authored") -> dict:
     """Normalize a GraphQL PR node into a flat dict."""
     # CI state
@@ -365,6 +381,11 @@ def normalize_pr(node: dict, source: str = "authored") -> dict:
     in_merge_queue = mq is not None
     merge_queue_position = mq.get("position") if mq else None
 
+    # Mergeable — GraphQL often returns UNKNOWN; fall back to REST
+    mergeable = node.get("mergeable")
+    if mergeable in ("UNKNOWN", None) and node.get("url"):
+        mergeable = _fetch_mergeable_rest(node["url"]) or mergeable
+
     repo = node.get("repository", {}).get("nameWithOwner", "")
 
     return {
@@ -377,7 +398,7 @@ def normalize_pr(node: dict, source: str = "authored") -> dict:
         "state": node.get("state", "OPEN"),
         "createdAt": node.get("createdAt"),
         "updatedAt": node.get("updatedAt"),
-        "mergeable": node.get("mergeable"),
+        "mergeable": mergeable,
         "in_merge_queue": in_merge_queue,
         "merge_queue_position": merge_queue_position,
         "ci_state": ci_state,
