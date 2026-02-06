@@ -144,7 +144,7 @@ query($owner: String!, $repo: String!, $number: Int!) {
 
 
 # ── Status helpers ─────────────────────────────────────────────────────
-def combined_icon(ci_state: str | None, review_decision: str | None, pr_state: str = "OPEN", in_merge_queue: bool = False) -> str:
+def combined_icon(ci_state: str | None, review_decision: str | None, pr_state: str = "OPEN", in_merge_queue: bool = False, mergeable: str | None = None) -> str:
     """Single icon reflecting the overall PR status (CI + review combined)."""
     # Merged or closed
     if pr_state == "MERGED":
@@ -154,6 +154,9 @@ def combined_icon(ci_state: str | None, review_decision: str | None, pr_state: s
     # In merge queue
     if in_merge_queue:
         return "🚀"
+    # Merge conflicts
+    if mergeable == "CONFLICTING":
+        return "⚔️"
     # CI failing/erroring always takes priority
     if ci_state in ("FAILURE", "ERROR"):
         return "❌"
@@ -383,7 +386,7 @@ def normalize_pr(node: dict, source: str = "authored") -> dict:
         "review_decision": review_decision,
         "review_icon": review_icon(review_decision),
         "review_label": review_label(review_decision),
-        "status_icon": combined_icon(ci_state, review_decision, node.get("state", "OPEN"), in_merge_queue),
+        "status_icon": combined_icon(ci_state, review_decision, node.get("state", "OPEN"), in_merge_queue, node.get("mergeable")),
         "checks": checks,
         "reviews": reviews,
         "labels": labels,
@@ -562,6 +565,8 @@ class PRWatchApp(rumps.App):
             if pr.get("in_merge_queue"):
                 pos = pr.get("merge_queue_position")
                 parts.append(f"Merge queue #{pos}" if pos is not None else "Merge queue")
+            elif pr.get("mergeable") == "CONFLICTING":
+                parts.append("Has conflicts")
             else:
                 parts.extend([pr["ci_label"], pr["review_label"]])
             if pr.get("source") == "watched" and pr.get("author"):
