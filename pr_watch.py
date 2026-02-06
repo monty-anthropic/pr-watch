@@ -534,26 +534,23 @@ class PRWatchApp(rumps.App):
         self.menu.add(rumps.MenuItem(main_label, callback=self._make_pr_cb(pr["url"], pr.get("source", "authored"))))
 
         if not is_done:
-            # Detail line: CI + review status + author + time
+            # Detail line: CI + review status + author + time + failing checks
             parts = [pr["ci_label"], pr["review_label"]]
             if pr.get("source") == "watched" and pr.get("author"):
                 parts.append(f"by {pr['author']}")
             if updated:
                 parts.append(updated)
-            detail_label = f"     {' · '.join(parts)}"
-            detail = rumps.MenuItem(detail_label)
-            detail.set_callback(None)
-            self.menu.add(detail)
-
-            # Show failing checks inline
             failing_checks = [
                 c for c in pr.get("checks", [])
                 if c.get("conclusion") in ("FAILURE", "failure", "ERROR", "error")
             ]
-            for c in failing_checks[:5]:
-                fail_item = rumps.MenuItem(f"     ❌ {c['name']}")
-                fail_item.set_callback(None)
-                self.menu.add(fail_item)
+            if failing_checks:
+                names = ", ".join(c["name"] for c in failing_checks[:3])
+                parts.append(f"✕ {names}")
+            detail_label = f"     {' · '.join(parts)}"
+            detail = rumps.MenuItem(detail_label)
+            detail.set_callback(None)
+            self.menu.add(detail)
 
 
     def _make_pr_cb(self, url: str, source: str):
