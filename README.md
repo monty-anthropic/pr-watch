@@ -74,6 +74,12 @@ bash uninstall.sh
 ## Logs
 
 ```bash
+# Debug log (structured, with timestamps + thread names — best for diagnosing issues)
+tail -f ~/.pr-watch/pr-watch-debug.log
+
+# LaunchAgent stdout/stderr (less useful, mostly gh CLI output)
 tail -f ~/.pr-watch/pr-watch.log
 tail -f ~/.pr-watch/pr-watch.err.log
 ```
+
+The debug log rotates at 2MB (keeps 2 backups). It logs fetch attempts, rebuild events, errors with tracebacks, and consecutive failure counts.
