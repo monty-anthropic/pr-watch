@@ -10,8 +10,11 @@ Exposes all PR data as JSON at ~/.pr-watch/prs.json for agent consumption.
 """
 
 import json
+import logging
+import logging.handlers
 import re
 import subprocess
+import threading
 import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +28,24 @@ CONFIG_FILE = DATA_DIR / "config.json"
 PR_JSON_FILE = DATA_DIR / "prs.json"
 
 # ── Defaults ───────────────────────────────────────────────────────────
+LOG_FILE = DATA_DIR / "pr-watch-debug.log"
+
+def _setup_logger() -> logging.Logger:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    logger = logging.getLogger("pr-watch")
+    logger.setLevel(logging.DEBUG)
+    handler = logging.handlers.RotatingFileHandler(
+        LOG_FILE, maxBytes=2 * 1024 * 1024, backupCount=2,
+    )
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] [%(threadName)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    logger.addHandler(handler)
+    return logger
+
+log = _setup_logger()
+
 DEFAULT_CONFIG = {
     "refresh_interval_seconds": 20,
     "my_prs_query": "is:pr is:open author:@me",
@@ -269,6 +290,7 @@ def save_config(cfg: dict):
 # ── GitHub API ─────────────────────────────────────────────────────────
 def run_gh(*args: str, input_data: str | None = None) -> str | None:
     """Run a gh CLI command and return stdout, or None on failure."""
+    cmd_summary = " ".join(args[:3])
     try:
         result = subprocess.run(
             ["gh", *args],
@@ -280,10 +302,13 @@ def run_gh(*args: str, input_data: str | None = None) -> str | None:
         if result.returncode == 0:
             return result.stdout
         else:
-            print(f"gh error: {result.stderr}")
+            log.warning("gh error (cmd=%s): %s", cmd_summary, result.stderr.strip())
             return None
+    except subprocess.TimeoutExpired:
+        log.error("gh timeout after 30s (cmd=%s)", cmd_summary)
+        return None
     except Exception as e:
-        print(f"gh exception: {e}")
+        log.error("gh exception (cmd=%s): %s", cmd_summary, e)
         return None
 
 
@@ -439,6 +464,7 @@ def save_pr_data(my_prs: list[dict], watched_prs: list[dict]):
 class PRWatchApp(rumps.App):
     def __init__(self):
         super().__init__("PR", quit_button=None)
+        log.info("PRWatchApp starting (pid=%d, thread=%s)", __import__("os").getpid(), threading.current_thread().name)
         self.config_data = load_config()
         self.my_prs: list[dict] = []
         self.watched_prs: list[dict] = []
@@ -446,6 +472,8 @@ class PRWatchApp(rumps.App):
         self._fetch_pending = True
         self._fetching = False
         self._needs_rebuild = False
+        self._consecutive_failures = 0
+        self._error_title = None  # set from bg thread, applied on main thread
 
         self.title = "⏳"
 
@@ -464,13 +492,16 @@ class PRWatchApp(rumps.App):
         # Rebuild menu if background fetch completed
         if self._needs_rebuild:
             self._needs_rebuild = False
+            # Apply error title from bg thread safely on main thread
+            if self._error_title:
+                log.warning("setting error title on main thread: %s", self._error_title)
+                self.title = self._error_title
+                self._error_title = None
             try:
                 self._rebuild_menu()
             except Exception as e:
-                import sys
                 import traceback
-                print(f"[rebuild error] {e}", file=sys.stderr, flush=True)
-                traceback.print_exc(file=sys.stderr)
+                log.error("rebuild error: %s\n%s", e, traceback.format_exc())
 
         # Start a background fetch if needed
         if not self._fetching:
@@ -482,8 +513,8 @@ class PRWatchApp(rumps.App):
 
     def _do_fetch(self):
         """Background thread: fetch data, set flag for main-thread rebuild."""
-        import sys
         import traceback
+        log.debug("fetch started")
         try:
             self.config_data = load_config()
 
@@ -504,15 +535,20 @@ class PRWatchApp(rumps.App):
 
             save_pr_data(self.my_prs, self.watched_prs)
             self._needs_rebuild = True
+            self._consecutive_failures = 0
+            log.debug("fetch ok — %d authored, %d watched", len(self.my_prs), len(self.watched_prs))
 
         except Exception:
-            traceback.print_exc(file=sys.stderr)
-            self.title = "⚠️"
+            self._consecutive_failures += 1
+            log.error("fetch failed (consecutive=%d):\n%s", self._consecutive_failures, traceback.format_exc())
+            self._error_title = "⚠️"
+            self._needs_rebuild = True  # let main thread set the title safely
         finally:
             self._fetching = False
 
     def _rebuild_menu(self):
         """Rebuild the entire dropdown menu. Runs on main thread."""
+        log.debug("rebuild_menu started (thread=%s)", threading.current_thread().name)
         all_prs = self.my_prs + self.watched_prs
         open_prs = [p for p in all_prs if p.get("state") == "OPEN"]
         total = len(open_prs)
@@ -664,5 +700,7 @@ class PRWatchApp(rumps.App):
 
 
 if __name__ == "__main__":
+    log.info("=== pr-watch starting ===")
     app = PRWatchApp()
     app.run()
+    log.info("=== pr-watch exited ===")  # if we ever get here, that's interesting
