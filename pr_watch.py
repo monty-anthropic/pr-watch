@@ -18,7 +18,7 @@ import threading
 import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import Thread
+from threading import Event, Thread
 
 import rumps
 
@@ -480,14 +480,43 @@ class PRWatchApp(rumps.App):
         self._refresh_interval = self.config_data.get("refresh_interval_seconds", 120)
         self._last_fetch_time = 0.0
 
+        # Keep a strong reference to the NSStatusItem to prevent GC
+        self._status_item_ref = None
+        self._tick_count = 0
+
+        # Persistent worker thread — wakes on signal instead of spawning new threads
+        self._fetch_event = Event()
+        self._worker = Thread(target=self._worker_loop, daemon=True, name="pr-watch-worker")
+        self._worker.start()
+
         # Single tick timer runs on main thread
         self._tick_timer = rumps.Timer(self._tick, 1)
         self._tick_timer.start()
+
+    def _ensure_status_item(self):
+        """Re-assert NSStatusItem reference to prevent GC from killing it."""
+        try:
+            from AppKit import NSStatusBar, NSVariableStatusItemLength
+            if self._status_item_ref is None:
+                self._status_item_ref = NSStatusBar.systemStatusBar().statusItemWithLength_(NSVariableStatusItemLength)
+                log.info("status item reference captured")
+            # Verify the status item is still valid by checking its button
+            button = self._status_item_ref.button()
+            if button is None:
+                log.warning("status item button is None — re-creating")
+                self._status_item_ref = NSStatusBar.systemStatusBar().statusItemWithLength_(NSVariableStatusItemLength)
+        except Exception as e:
+            log.error("status item health check failed: %s", e)
 
     def _tick(self, _sender):
         """Main-thread tick."""
         import time as _time
         now = _time.time()
+        self._tick_count += 1
+
+        # Periodic status item health check (every 60s)
+        if self._tick_count % 60 == 0:
+            self._ensure_status_item()
 
         # Rebuild menu if background fetch completed
         if self._needs_rebuild:
@@ -503,13 +532,21 @@ class PRWatchApp(rumps.App):
                 import traceback
                 log.error("rebuild error: %s\n%s", e, traceback.format_exc())
 
-        # Start a background fetch if needed
+        # Signal the worker thread if a fetch is needed
         if not self._fetching:
             if self._fetch_pending or (now - self._last_fetch_time >= self._refresh_interval):
                 self._fetch_pending = False
                 self._fetching = True
                 self._last_fetch_time = now
-                Thread(target=self._do_fetch, daemon=True).start()
+                self._fetch_event.set()
+
+    def _worker_loop(self):
+        """Persistent worker thread — waits for signal, fetches, repeats."""
+        log.info("worker thread started")
+        while True:
+            self._fetch_event.wait()
+            self._fetch_event.clear()
+            self._do_fetch()
 
     def _do_fetch(self):
         """Background thread: fetch data, set flag for main-thread rebuild."""
