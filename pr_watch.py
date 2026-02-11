@@ -489,6 +489,9 @@ class PRWatchApp(rumps.App):
         self._worker = Thread(target=self._worker_loop, daemon=True, name="pr-watch-worker")
         self._worker.start()
 
+        # Listen for display configuration changes (monitor plug/unplug, wake, etc.)
+        self._register_display_notifications()
+
         # Single tick timer runs on main thread
         self._tick_timer = rumps.Timer(self._tick, 1)
         self._tick_timer.start()
@@ -507,6 +510,25 @@ class PRWatchApp(rumps.App):
                 self._status_item_ref = NSStatusBar.systemStatusBar().statusItemWithLength_(NSVariableStatusItemLength)
         except Exception as e:
             log.error("status item health check failed: %s", e)
+
+    def _register_display_notifications(self):
+        """Register for display config change notifications (monitor plug/unplug, wake)."""
+        try:
+            from AppKit import NSApplicationDidChangeScreenParametersNotification
+            from Foundation import NSNotificationCenter
+            NSNotificationCenter.defaultCenter().addObserver_selector_name_object_(
+                self, "_onDisplayChanged:",
+                NSApplicationDidChangeScreenParametersNotification, None,
+            )
+            log.info("registered for display change notifications")
+        except Exception as e:
+            log.error("failed to register display notifications: %s", e)
+
+    def _onDisplayChanged_(self, notification):
+        """Called when display configuration changes — re-assert status item."""
+        log.info("display configuration changed — refreshing status item")
+        self._ensure_status_item()
+        self._needs_rebuild = True
 
     def _tick(self, _sender):
         """Main-thread tick."""
