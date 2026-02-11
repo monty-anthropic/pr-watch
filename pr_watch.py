@@ -497,17 +497,15 @@ class PRWatchApp(rumps.App):
         self._tick_timer.start()
 
     def _ensure_status_item(self):
-        """Re-assert NSStatusItem reference to prevent GC from killing it."""
+        """Hold a strong reference to rumps' own NSStatusItem to prevent GC."""
         try:
-            from AppKit import NSStatusBar, NSVariableStatusItemLength
+            nsstatusitem = self._nsapp.nsstatusitem
             if self._status_item_ref is None:
-                self._status_item_ref = NSStatusBar.systemStatusBar().statusItemWithLength_(NSVariableStatusItemLength)
-                log.info("status item reference captured")
-            # Verify the status item is still valid by checking its button
-            button = self._status_item_ref.button()
-            if button is None:
-                log.warning("status item button is None — re-creating")
-                self._status_item_ref = NSStatusBar.systemStatusBar().statusItemWithLength_(NSVariableStatusItemLength)
+                self._status_item_ref = nsstatusitem
+                log.info("captured strong ref to rumps NSStatusItem")
+            if self._status_item_ref is not nsstatusitem:
+                self._status_item_ref = nsstatusitem
+                log.warning("rumps NSStatusItem changed — re-captured ref")
         except Exception as e:
             log.error("status item health check failed: %s", e)
 
